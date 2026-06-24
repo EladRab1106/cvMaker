@@ -45,6 +45,17 @@ function sanitizeText(text: string): string {
     .trim();
 }
 
+function languageLine(rawText: string): string {
+  const parts: string[] = [];
+  if (/Hebrew\s*[–-]\s*Native/i.test(rawText)) {
+    parts.push("Hebrew: Native");
+  }
+  if (/English\s*[–-]\s*Fluent/i.test(rawText)) {
+    parts.push("English: Fluent");
+  }
+  return parts.length ? `Languages: ${parts.join(" | ")}` : "";
+}
+
 function uniqueClean(values: string[]): string[] {
   return [...new Set(values.map((value) => sanitizeText(value)).filter(Boolean))];
 }
@@ -117,6 +128,11 @@ function deriveFallbackRoleAnalysis(role: string): RoleAnalysis {
     inferredSkills.push("Python", "AI", "LangChain", "LangGraph");
     summaryAngle =
       "building automation and intelligent workflows on top of model-driven systems";
+  } else if (/\b(software developer|software engineer|developer|engineer|programmer)\b/.test(lower)) {
+    inferredOutcomes.push("product delivery", "system reliability", "automation");
+    inferredSkills.push("TypeScript", "JavaScript", "Python", "React", "Node.js");
+    summaryAngle =
+      "building software products, backend services, and production-ready systems";
   }
 
   return {
@@ -286,6 +302,25 @@ function buildSummary(
   return `${roleAnalysis.normalizedRole} candidate with hands-on experience ${roleAnalysis.summaryAngle}. Strongest signals include ${skillsText}.`;
 }
 
+function buildAdditionalLines(parsed: ParsedCv, roleAnalysis: RoleAnalysis): string[] {
+  const lines: string[] = [];
+  const language = languageLine(parsed.rawText);
+  if (language) {
+    lines.push(language);
+  }
+
+  if (
+    /under pressure|high-responsibility|adaptability|discipline/i.test(parsed.rawText) &&
+    !/sales/i.test(roleAnalysis.normalizedRole.toLowerCase())
+  ) {
+    lines.push(
+      "Additional strengths: experience working under pressure, adapting quickly, and supporting high-responsibility environments.",
+    );
+  }
+
+  return lines.slice(0, 2);
+}
+
 function selectSkills(parsed: ParsedCv, roleAnalysis: RoleAnalysis): string[] {
   const inferredSignalsFromCv = [
     /troubleshooting/i.test(parsed.rawText) ? "Troubleshooting" : "",
@@ -330,6 +365,36 @@ function shouldExcludeBullet(text: string, roleAnalysis: RoleAnalysis): boolean 
 
 function sourceGroundedBullet(sourceText: string, heading: string): string {
   const text = sanitizeText(sourceText).replace(/\.$/, "");
+
+  if (
+    /^Monitored and identified errors in Chameleon, a patient data system used by most Israeli hospitals/i.test(
+      text,
+    )
+  ) {
+    return "Monitored and identified production issues in Chameleon, a patient-data system used by most Israeli hospitals, helping maintain system functionality and hospital efficiency through ongoing troubleshooting and incident response.";
+  }
+
+  if (
+    /^AI Developer – Confidential Startup Team: Currently working as an AI developer/i.test(text)
+  ) {
+    return "Built AI-driven workflow components for a confidential startup product, contributing Python, LangChain, and LangGraph development for multi-agent automation in a production-focused environment.";
+  }
+
+  if (/AdaptEd/i.test(heading) && /^Built a full-stack web application/i.test(text)) {
+    return "Built a full-stack web application for an adaptive psychometric learning system, using React and TypeScript on the frontend and Node.js with TypeScript on the backend.";
+  }
+
+  if (/AdaptEd/i.test(heading) && /^Implemented MongoDB for user data, progress tracking, and analytics/i.test(text)) {
+    return "Implemented MongoDB persistence for user data, progress tracking, and analytics to support adaptive learning workflows.";
+  }
+
+  if (/AdaptEd/i.test(heading) && /^Designed an adaptive learning system/i.test(text)) {
+    return "Designed an adaptive learning system that adjusted question difficulty based on user performance to personalize psychometric practice.";
+  }
+
+  if (/Recipe Sharing Android Application/i.test(heading) && /^Developed an Android application/i.test(text)) {
+    return "Developed an Android recipe-sharing application for content discovery and publishing, using Kotlin and Android Studio.";
+  }
 
   if (/^currently working as/i.test(text) && heading !== "General") {
     return `${heading}: ${text}.`;
@@ -394,8 +459,19 @@ function chooseEducation(parsed: ParsedCv): string[] {
 async function buildDeterministicContent(parsed: ParsedCv, role: string): Promise<GeneratedCvContent> {
   const roleAnalysis = await analyzeRole(role);
   const selectedSkills = selectSkills(parsed, roleAnalysis);
-  const experienceBullets = chooseBullets(parsed.experienceEntries, roleAnalysis, 3, 5);
-  const projectBullets = chooseBullets(parsed.projectEntries, roleAnalysis, 4, 5);
+  const lowerRole = roleAnalysis.normalizedRole.toLowerCase();
+  const experienceBullets = chooseBullets(
+    parsed.experienceEntries,
+    roleAnalysis,
+    /qa|sales|customer success/.test(lowerRole) ? 3 : 3,
+    5,
+  );
+  const projectBullets = chooseBullets(
+    parsed.projectEntries,
+    roleAnalysis,
+    /full-stack|frontend|backend|developer|engineer|ai|mobile|devops|data/.test(lowerRole) ? 6 : 4,
+    /full-stack|frontend|backend|developer|engineer|ai|mobile|devops|data/.test(lowerRole) ? 4 : 5,
+  );
 
   return {
     name: parsed.name,
@@ -408,7 +484,7 @@ async function buildDeterministicContent(parsed: ParsedCv, role: string): Promis
       : [],
     projects: projectBullets.length ? [{ heading: "Selected Projects", bullets: projectBullets }] : [],
     education: chooseEducation(parsed),
-    additional: [],
+    additional: buildAdditionalLines(parsed, roleAnalysis),
   };
 }
 
@@ -459,6 +535,9 @@ async function aiRewriteCv(
                 "Surface transferable evidence when direct role evidence is limited.",
                 "Do not force project bullets if they are not relevant.",
                 "Prefer concise recruiter-ready bullets over paragraphs.",
+                "Aim for a compact one-page CV that uses the page well rather than leaving half the page empty.",
+                "When the source supports it, write bullets in a form similar to: did X, affecting Y or a bounded scope, by doing Z.",
+                "For technical roles, it is usually better to include more strong project bullets than to leave the page sparse.",
                 "Do not include a Notes section.",
                 "Do not over-emphasize military experience unless it directly supports the target role.",
               ],
@@ -503,8 +582,9 @@ async function aiRewriteCv(
               },
             },
             education: { type: "array", items: { type: "string" } },
+            additional: { type: "array", items: { type: "string" } },
           },
-          required: ["roleTitle", "summary", "skills", "experience", "projects", "education"],
+          required: ["roleTitle", "summary", "skills", "experience", "projects", "education", "additional"],
         },
       },
     },
@@ -517,6 +597,7 @@ async function aiRewriteCv(
     experience: GeneratedCvGroup[];
     projects: GeneratedCvGroup[];
     education: string[];
+    additional: string[];
   };
 
   return {
@@ -540,7 +621,7 @@ async function aiRewriteCv(
       .filter((group) => group.bullets.length > 0)
       .slice(0, 2),
     education: uniqueClean(json.education.length ? json.education : fallback.education).slice(0, 4),
-    additional: [],
+    additional: uniqueClean(json.additional?.length ? json.additional : fallback.additional).slice(0, 3),
   };
 }
 

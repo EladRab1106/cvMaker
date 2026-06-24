@@ -133,6 +133,20 @@ export async function renderPdf(content: GeneratedCvContent): Promise<Buffer> {
     });
   }
 
+  if (content.additional.length > 0) {
+    writeSectionTitle(doc, "Additional");
+    content.additional.forEach((line) => {
+      doc
+        .font("Helvetica")
+        .fontSize(9)
+        .fillColor("#334155")
+        .text(line, {
+          width: 510,
+          lineGap: 1.1,
+        });
+    });
+  }
+
   doc.end();
 
   return await new Promise((resolve) => {
