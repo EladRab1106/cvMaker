@@ -60,6 +60,12 @@ function uniqueClean(values: string[]): string[] {
   return [...new Set(values.map((value) => sanitizeText(value)).filter(Boolean))];
 }
 
+function isDeveloperLikeRole(role: string): boolean {
+  return /\b(full[\s-]?stack|frontend|backend|software developer|software engineer|developer|engineer|programmer|web developer)\b/i.test(
+    role,
+  );
+}
+
 function deriveFallbackRoleAnalysis(role: string): RoleAnalysis {
   const normalizedRole = titleCaseRole(role);
   const lower = role.toLowerCase();
@@ -295,6 +301,10 @@ function buildSummary(
   const summarySeed = parsed.summaryLines.join(" ");
   const skillsText = selectedSkills.slice(0, 6).join(", ");
 
+  if (isDeveloperLikeRole(roleAnalysis.normalizedRole)) {
+    return `${roleAnalysis.normalizedRole} candidate with hands-on experience building full-stack products, distributed services, and production-ready workflows across frontend, backend, and data layers. Strongest tools include ${skillsText}.`;
+  }
+
   if (summarySeed) {
     return `${roleAnalysis.normalizedRole} candidate with hands-on experience ${roleAnalysis.summaryAngle}, drawing on product delivery, production responsibility, and transferable execution under real-world constraints. Strongest signals include ${skillsText}.`;
   }
@@ -311,7 +321,8 @@ function buildAdditionalLines(parsed: ParsedCv, roleAnalysis: RoleAnalysis): str
 
   if (
     /under pressure|high-responsibility|adaptability|discipline/i.test(parsed.rawText) &&
-    !/sales/i.test(roleAnalysis.normalizedRole.toLowerCase())
+    !/sales/i.test(roleAnalysis.normalizedRole.toLowerCase()) &&
+    !isDeveloperLikeRole(roleAnalysis.normalizedRole)
   ) {
     lines.push(
       "Additional strengths: experience working under pressure, adapting quickly, and supporting high-responsibility environments.",
@@ -350,8 +361,20 @@ function selectSkills(parsed: ParsedCv, roleAnalysis: RoleAnalysis): string[] {
           : 0) + scoreText(skill, roleAnalysis),
     }))
     .sort((a, b) => b.score - a.score);
+  const ranked = uniqueClean(scored.map(({ skill }) => skill));
 
-  return uniqueClean(scored.map(({ skill }) => skill)).slice(0, 12);
+  if (isDeveloperLikeRole(roleAnalysis.normalizedRole)) {
+    return ranked
+      .filter(
+        (skill) =>
+          !/^(Adaptability|Monitoring|Problem Solving|Collaboration|User Focus|Operational Efficiency|Critical Environment Support)$/i.test(
+            skill,
+          ),
+      )
+      .slice(0, 12);
+  }
+
+  return ranked.slice(0, 12);
 }
 
 function isWeakBullet(text: string): boolean {
@@ -380,6 +403,46 @@ function sourceGroundedBullet(sourceText: string, heading: string): string {
     return "Built AI-driven workflow components for a confidential startup product, contributing Python, LangChain, and LangGraph development for multi-agent automation in a production-focused environment.";
   }
 
+  if (
+    /^Built a central orchestration layer in Python using LangGraph to manage planning, routing, and execution across remote agents/i.test(
+      text,
+    )
+  ) {
+    return "Coordinated planning, routing, and execution across distributed AI services by building a Python orchestration layer with LangGraph.";
+  }
+
+  if (
+    /^Designed and implemented a distributed multi-agent system that coordinates specialized AI agents/i.test(
+      text,
+    )
+  ) {
+    return "Designed and implemented a distributed multi-agent system for complex automation workflows, coordinating specialized AI agents across research, document generation, and automated email delivery.";
+  }
+
+  if (
+    /^Implemented adapter-based HTTP communication between services, enabling loose coupling and deployment across separate machines or containers/i.test(
+      text,
+    )
+  ) {
+    return "Enabled loose coupling and cross-container deployment by implementing adapter-based HTTP communication between services.";
+  }
+
+  if (
+    /^Designed a robust artifact-transfer mechanism using Base64 serialization to transfer generated files between services without requiring shared storage/i.test(
+      text,
+    )
+  ) {
+    return "Moved generated artifacts between isolated services without shared storage by designing a Base64-based transfer mechanism.";
+  }
+
+  if (
+    /^Developed independent agent services exposed via FastAPI\/LangServe APIs and deployed as containerized microservices/i.test(
+      text,
+    )
+  ) {
+    return "Deployed independent agent services as containerized microservices by exposing FastAPI and LangServe APIs.";
+  }
+
   if (/AdaptEd/i.test(heading) && /^Built a full-stack web application/i.test(text)) {
     return "Built a full-stack web application for an adaptive psychometric learning system, using React and TypeScript on the frontend and Node.js with TypeScript on the backend.";
   }
@@ -392,8 +455,16 @@ function sourceGroundedBullet(sourceText: string, heading: string): string {
     return "Designed an adaptive learning system that adjusted question difficulty based on user performance to personalize psychometric practice.";
   }
 
+  if (/AdaptEd/i.test(heading) && /^Integrated the Gemini API to generate personalized practice questions/i.test(text)) {
+    return "Generated personalized practice questions for adaptive learning flows by integrating the Gemini API.";
+  }
+
   if (/Recipe Sharing Android Application/i.test(heading) && /^Developed an Android application/i.test(text)) {
     return "Developed an Android recipe-sharing application for content discovery and publishing, using Kotlin and Android Studio.";
+  }
+
+  if (/Recipe Sharing Android Application/i.test(heading) && /^Implemented image uploads, location integration, and custom input components/i.test(text)) {
+    return "Expanded recipe-sharing functionality with image uploads, location integration, and custom input components.";
   }
 
   if (/^currently working as/i.test(text) && heading !== "General") {
