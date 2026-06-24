@@ -12,10 +12,21 @@ export interface ParsedSection {
   lines: string[];
 }
 
+export interface ParsedEntry {
+  heading: string;
+  bullets: string[];
+}
+
 export interface ParsedCv {
   name: string;
   contactLine: string;
   sections: ParsedSection[];
+  summaryLines: string[];
+  skillItems: string[];
+  experienceEntries: ParsedEntry[];
+  projectEntries: ParsedEntry[];
+  educationLines: string[];
+  additionalLines: string[];
   rawText: string;
 }
 
@@ -24,20 +35,19 @@ export interface AchievementBullet {
   relevanceScore: number;
 }
 
+export interface GeneratedCvGroup {
+  heading: string;
+  bullets: string[];
+}
+
 export interface GeneratedCvContent {
   name: string;
   roleTitle: string;
   contactLine: string;
   summary: string;
   skills: string[];
-  experience: Array<{
-    heading: string;
-    bullets: string[];
-  }>;
-  projects: Array<{
-    heading: string;
-    bullets: string[];
-  }>;
+  experience: GeneratedCvGroup[];
+  projects: GeneratedCvGroup[];
   education: string[];
   additional: string[];
 }

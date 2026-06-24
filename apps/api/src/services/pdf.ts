@@ -1,24 +1,40 @@
 import PDFDocument from "pdfkit";
 import type { GeneratedCvContent } from "../types.js";
 
-function writeSectionTitle(doc: PDFKit.PDFDocument, text: string) {
+function drawSectionRule(doc: PDFKit.PDFDocument) {
+  const y = doc.y + 3;
   doc
-    .moveDown(0.45)
+    .save()
+    .moveTo(doc.page.margins.left, y)
+    .lineTo(doc.page.width - doc.page.margins.right, y)
+    .lineWidth(0.8)
+    .strokeColor("#DBE4F0")
+    .stroke()
+    .restore();
+  doc.moveDown(0.55);
+}
+
+function writeSectionTitle(doc: PDFKit.PDFDocument, text: string) {
+  drawSectionRule(doc);
+  doc
     .font("Helvetica-Bold")
-    .fontSize(11)
-    .fillColor("#111827")
-    .text(text);
+    .fontSize(10.5)
+    .fillColor("#0F172A")
+    .text(text.toUpperCase(), {
+      characterSpacing: 1.2,
+    });
 }
 
 function writeBullet(doc: PDFKit.PDFDocument, text: string) {
   doc
     .font("Helvetica")
-    .fontSize(9.2)
+    .fontSize(9.15)
     .fillColor("#1F2937")
     .text(`• ${text}`, {
       width: 510,
-      indent: 12,
+      indent: 10,
       paragraphGap: 3,
+      lineGap: 1.2,
     });
 }
 
@@ -27,9 +43,9 @@ export async function renderPdf(content: GeneratedCvContent): Promise<Buffer> {
     size: "A4",
     margins: {
       top: 34,
-      bottom: 32,
-      left: 38,
-      right: 38,
+      bottom: 28,
+      left: 42,
+      right: 42,
     },
   });
 
@@ -38,54 +54,54 @@ export async function renderPdf(content: GeneratedCvContent): Promise<Buffer> {
 
   doc
     .font("Helvetica-Bold")
-    .fontSize(28)
+    .fontSize(29)
     .fillColor("#0F172A")
     .text(content.name, { align: "center" });
 
   doc
-    .moveDown(0.15)
+    .moveDown(0.08)
     .font("Helvetica-Bold")
     .fontSize(13)
     .fillColor("#2563EB")
     .text(content.roleTitle, { align: "center" });
 
   doc
-    .moveDown(0.2)
+    .moveDown(0.18)
     .font("Helvetica")
-    .fontSize(10.2)
+    .fontSize(10.4)
     .fillColor("#475569")
     .text(content.contactLine, { align: "center" });
 
   doc
-    .moveDown(0.8)
+    .moveDown(0.75)
     .font("Helvetica")
-    .fontSize(10.4)
+    .fontSize(10.15)
     .fillColor("#111827")
     .text(content.summary, {
+      width: 510,
       align: "left",
-      width: 515,
+      lineGap: 1.4,
     });
 
   writeSectionTitle(doc, "Core Skills");
   doc
     .font("Helvetica")
-    .fontSize(9.3)
+    .fontSize(9.35)
     .fillColor("#334155")
     .text(content.skills.join(" • "), {
-      width: 515,
-      lineGap: 2,
+      width: 510,
+      lineGap: 1.8,
     });
 
   if (content.experience.length > 0) {
     writeSectionTitle(doc, "Experience");
     for (const group of content.experience) {
       doc
-        .moveDown(0.18)
+        .moveDown(0.12)
         .font("Helvetica-Bold")
-        .fontSize(10)
+        .fontSize(9.85)
         .fillColor("#111827")
         .text(group.heading);
-
       group.bullets.forEach((bullet) => writeBullet(doc, bullet));
     }
   }
@@ -94,12 +110,11 @@ export async function renderPdf(content: GeneratedCvContent): Promise<Buffer> {
     writeSectionTitle(doc, "Projects");
     for (const group of content.projects) {
       doc
-        .moveDown(0.18)
+        .moveDown(0.12)
         .font("Helvetica-Bold")
-        .fontSize(10)
+        .fontSize(9.85)
         .fillColor("#111827")
         .text(group.heading);
-
       group.bullets.forEach((bullet) => writeBullet(doc, bullet));
     }
   }
@@ -109,25 +124,11 @@ export async function renderPdf(content: GeneratedCvContent): Promise<Buffer> {
     content.education.forEach((line) => {
       doc
         .font("Helvetica")
-        .fontSize(9.2)
+        .fontSize(9.15)
         .fillColor("#334155")
         .text(line, {
-          width: 515,
-          lineGap: 1.5,
-        });
-    });
-  }
-
-  if (content.additional.length > 0) {
-    writeSectionTitle(doc, "Notes");
-    content.additional.forEach((line) => {
-      doc
-        .font("Helvetica")
-        .fontSize(8.4)
-        .fillColor("#64748B")
-        .text(line, {
-          width: 515,
-          lineGap: 1,
+          width: 510,
+          lineGap: 1.2,
         });
     });
   }

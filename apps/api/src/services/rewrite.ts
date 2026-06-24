@@ -1,271 +1,513 @@
 import OpenAI from "openai";
-import type { GeneratedCvContent, ParsedCv } from "../types.js";
+import type { GeneratedCvContent, GeneratedCvGroup, ParsedCv, ParsedEntry } from "../types.js";
 
-const ROLE_KEYWORDS: Record<string, string[]> = {
-  frontend: ["react", "typescript", "javascript", "ui", "frontend", "css", "vite"],
-  backend: ["node", "api", "express", "fastapi", "sql", "mongodb", "backend", "service"],
-  "full stack": ["react", "node", "typescript", "api", "mongodb", "frontend", "backend"],
-  ai: ["python", "langchain", "langgraph", "ml", "ai", "agent", "llm"],
-  mobile: ["android", "kotlin", "mobile", "ios", "studio"],
-};
+interface RoleProfile {
+  normalizedRole: string;
+  summaryLabel: string;
+  tracks: string[];
+  keywords: string[];
+  prioritySkills: string[];
+  preferredSignals: string[];
+}
 
-function inferRoleKeywords(role: string): string[] {
-  const lower = role.toLowerCase().replace(/-/g, " ");
-  const matches = Object.entries(ROLE_KEYWORDS)
-    .filter(([key]) => lower.includes(key))
-    .flatMap(([, keywords]) => keywords);
+interface CandidateBullet {
+  heading: string;
+  sourceText: string;
+  score: number;
+  section: "experience" | "projects";
+}
 
-  if (matches.length > 0) {
-    return [...new Set(matches)];
-  }
+const ROLE_LIBRARY: Array<{
+  pattern: RegExp;
+  profile: Omit<RoleProfile, "normalizedRole" | "summaryLabel" | "tracks">;
+}> = [
+  {
+    pattern: /\b(frontend|front end|ui|web ui)\b/i,
+    profile: {
+      keywords: ["react", "typescript", "javascript", "frontend", "ui", "css", "user", "web"],
+      prioritySkills: ["React", "TypeScript", "JavaScript", "CSS", "Node.js"],
+      preferredSignals: ["built user-facing", "frontend", "ui", "web application"],
+    },
+  },
+  {
+    pattern: /\b(backend|back end|server|api)\b/i,
+    profile: {
+      keywords: ["node", "api", "express", "fastapi", "backend", "service", "mongodb", "sql"],
+      prioritySkills: ["Node.js", "TypeScript", "Python", "MongoDB", "SQL", "Express.js"],
+      preferredSignals: ["api", "service", "backend", "persistence", "deployment"],
+    },
+  },
+  {
+    pattern: /\b(full[\s-]?stack|full stack)\b/i,
+    profile: {
+      keywords: ["react", "typescript", "node", "api", "mongodb", "frontend", "backend", "full-stack"],
+      prioritySkills: ["TypeScript", "React", "Node.js", "MongoDB", "JavaScript", "Python"],
+      preferredSignals: ["full-stack", "frontend", "backend", "web application", "analytics"],
+    },
+  },
+  {
+    pattern: /\b(qa|quality assurance|test engineer|sdet|automation tester)\b/i,
+    profile: {
+      keywords: ["qa", "test", "quality", "bug", "validation", "monitoring", "reliability", "automation", "defect"],
+      prioritySkills: ["Python", "TypeScript", "JavaScript", "SQL", "Git", "Linux"],
+      preferredSignals: ["identified errors", "system functionality", "monitoring", "stability", "validation"],
+    },
+  },
+  {
+    pattern: /\b(devops|site reliability|sre|platform|infrastructure|cloud)\b/i,
+    profile: {
+      keywords: ["deployment", "containers", "services", "infrastructure", "monitoring", "stability", "linux"],
+      prioritySkills: ["Linux", "Python", "Git", "Node.js"],
+      preferredSignals: ["containerized", "deployment", "services", "stability", "monitoring"],
+    },
+  },
+  {
+    pattern: /\b(data|analytics|bi|data engineer|data analyst)\b/i,
+    profile: {
+      keywords: ["data", "analytics", "mongodb", "sql", "tracking", "pipeline", "progress"],
+      prioritySkills: ["SQL", "MongoDB", "Python", "TypeScript"],
+      preferredSignals: ["analytics", "progress tracking", "user data", "data"],
+    },
+  },
+  {
+    pattern: /\b(ai|ml|machine learning|llm|nlp)\b/i,
+    profile: {
+      keywords: ["python", "langchain", "langgraph", "ai", "agent", "llm", "gemini"],
+      prioritySkills: ["Python", "LangChain", "LangGraph", "TypeScript", "Node.js"],
+      preferredSignals: ["multi-agent", "ai-driven", "automation", "personalized", "question generation"],
+    },
+  },
+  {
+    pattern: /\b(mobile|android|ios)\b/i,
+    profile: {
+      keywords: ["android", "kotlin", "mobile", "ui", "location", "image upload"],
+      prioritySkills: ["Kotlin", "Android Studio", "Java"],
+      preferredSignals: ["android", "mobile", "location", "user-generated content"],
+    },
+  },
+  {
+    pattern: /\b(security|cyber|application security)\b/i,
+    profile: {
+      keywords: ["security", "monitoring", "critical", "reliability", "validation", "troubleshooting"],
+      prioritySkills: ["Python", "Linux", "Git", "SQL"],
+      preferredSignals: ["critical", "classified", "under pressure", "identified errors"],
+    },
+  },
+];
 
+const ACTION_VERB_PATTERN =
+  /\b(built|developed|designed|implemented|integrated|created|delivered|enabled|coordinated|supported|monitored|reduced|improved|automated|tested|validated|deployed|moved|focused|led|managed|contributed|served|performed|owned)\b/i;
+
+function titleCaseRole(role: string): string {
   return role
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+    .replace(/\bQa\b/g, "QA")
+    .replace(/\bAi\b/g, "AI")
+    .replace(/\bMl\b/g, "ML")
+    .replace(/\bSdet\b/g, "SDET")
+    .replace(/\bDevops\b/g, "DevOps")
+    .replace(/\bUi\b/g, "UI")
+    .replace(/\bUx\b/g, "UX");
+}
+
+function buildRoleProfile(role: string): RoleProfile {
+  const matchedProfiles = ROLE_LIBRARY.filter((entry) => entry.pattern.test(role));
+
+  const mergedKeywords = matchedProfiles.flatMap((entry) => entry.profile.keywords);
+  const mergedSkills = matchedProfiles.flatMap((entry) => entry.profile.prioritySkills);
+  const mergedSignals = matchedProfiles.flatMap((entry) => entry.profile.preferredSignals);
+
+  const fallbackTokens = role
     .toLowerCase()
     .split(/[^a-z0-9+]+/)
     .filter((token) => token.length > 2);
+
+  const normalizedRole = titleCaseRole(role);
+  return {
+    normalizedRole,
+    summaryLabel: normalizedRole,
+    tracks: matchedProfiles.map((entry) => entry.pattern.source),
+    keywords: [...new Set([...mergedKeywords, ...fallbackTokens])],
+    prioritySkills: [...new Set(mergedSkills)],
+    preferredSignals: [...new Set(mergedSignals)],
+  };
 }
 
-function splitLines(parsed: ParsedCv, sectionName: string): string[] {
-  return parsed.sections
-    .filter((section) => section.name === sectionName)
-    .flatMap((section) => section.lines);
-}
-
-function cleanLine(line: string): string {
-  return line
+function sanitizeText(text: string): string {
+  return text
     .replace(/\s+/g, " ")
-    .replace(/\b[a-z]+:\s*$/i, "")
+    .replace(/\b([A-Za-z]+)-\s+on\b/g, "$1-on")
+    .replace(/\b(Built|Developed|Designed|Implemented|Integrated|Focused)\.?$/, "")
     .trim();
 }
 
-function isStandaloneLabel(line: string): boolean {
-  const words = line.split(/\s+/);
-  if (/[–-].*\(/.test(line) && words.length <= 16) {
-    return true;
+function scoreText(text: string, profile: RoleProfile): number {
+  const lower = text.toLowerCase();
+  const keywordScore = profile.keywords.reduce(
+    (score, keyword) => score + (lower.includes(keyword.toLowerCase()) ? 4 : 0),
+    0,
+  );
+  const signalScore = profile.preferredSignals.reduce(
+    (score, signal) => score + (lower.includes(signal.toLowerCase()) ? 3 : 0),
+    0,
+  );
+  const actionBonus = ACTION_VERB_PATTERN.test(text) ? 2 : 0;
+  const scopeBonus =
+    /(used by|across|for user data|without shared storage|containerized|production|analytics|hospitals)/i.test(
+      text,
+    )
+      ? 2
+      : 0;
+
+  return keywordScore + signalScore + actionBonus + scopeBonus;
+}
+
+function buildSummary(parsed: ParsedCv, profile: RoleProfile, selectedSkills: string[]): string {
+  const summarySeed = parsed.summaryLines.join(" ");
+  const roleFocus = profile.keywords
+    .slice(0, 4)
+    .map((keyword) => titleCaseRole(keyword))
+    .join(", ");
+  const lowerRole = profile.normalizedRole.toLowerCase();
+
+  if (lowerRole.includes("qa")) {
+    return `${profile.summaryLabel} candidate with hands-on experience diagnosing production issues, validating system behavior, and supporting reliability-critical environments. Strongest tools include ${selectedSkills.slice(0, 6).join(", ")}.`;
   }
 
-  return (
-    words.length <= 12 &&
-    !/[.?!]$/.test(line) &&
-    !/\b(using|with|by|for|to|across|through)\b/i.test(line) &&
-    !/^(built|designed|developed|implemented|integrated|supported|monitored|created|enabled|delivered|coordinated|moved|personalized|focused)\b/i.test(line)
+  if (lowerRole.includes("frontend")) {
+    return `${profile.summaryLabel} candidate with hands-on experience building user-facing products, working across React and TypeScript, and shaping maintainable interfaces under real-world delivery constraints. Strongest tools include ${selectedSkills.slice(0, 6).join(", ")}.`;
+  }
+
+  if (lowerRole.includes("backend")) {
+    return `${profile.summaryLabel} candidate with hands-on experience building APIs, application logic, and data-backed services, with additional exposure to production troubleshooting and system stability. Strongest tools include ${selectedSkills.slice(0, 6).join(", ")}.`;
+  }
+
+  if (lowerRole.includes("full-stack")) {
+    return `${profile.summaryLabel} candidate with hands-on experience building end-to-end web products across frontend, backend, and data flows, while contributing to production-grade systems under real-world constraints. Strongest tools include ${selectedSkills.slice(0, 6).join(", ")}.`;
+  }
+
+  if (lowerRole.includes("devops")) {
+    return `${profile.summaryLabel} candidate with hands-on experience supporting production systems, deployment workflows, and service reliability across distributed technical environments. Strongest tools include ${selectedSkills.slice(0, 6).join(", ")}.`;
+  }
+
+  if (summarySeed) {
+    return `${profile.summaryLabel} candidate with hands-on experience in ${roleFocus || "software delivery"}, combining product development, production ownership, and strong execution under real-world constraints. Strongest tools include ${selectedSkills.slice(0, 6).join(", ")}.`;
+  }
+
+  return `${profile.summaryLabel} candidate with hands-on experience in ${roleFocus || "software engineering"} and a track record of shipping technical work, supporting production systems, and solving operational problems with clear ownership.`;
+}
+
+function selectSkills(parsed: ParsedCv, profile: RoleProfile): string[] {
+  const source = [...parsed.skillItems];
+  const scored = source
+    .map((skill) => ({
+      skill,
+      score:
+        (profile.prioritySkills.some((target) => target.toLowerCase() === skill.toLowerCase()) ? 8 : 0) +
+        scoreText(skill, profile),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  const prioritized = [...new Set(scored.map(({ skill }) => skill))];
+  return prioritized.slice(0, 12);
+}
+
+function extractCandidateBullets(
+  entries: ParsedEntry[],
+  section: "experience" | "projects",
+  profile: RoleProfile,
+): CandidateBullet[] {
+  return entries.flatMap((entry) =>
+    entry.bullets.map((bullet) => {
+      const sourceText = sanitizeText(bullet);
+      const headingWeight = scoreText(entry.heading, profile);
+      const score = scoreText(sourceText, profile) + headingWeight + (section === "experience" ? 1 : 0);
+      return {
+        heading: entry.heading,
+        sourceText,
+        score,
+        section,
+      };
+    }),
   );
 }
 
-function mergeFragments(lines: string[]): string[] {
-  const merged: string[] = [];
-
-  for (const rawLine of lines.map(cleanLine).filter(Boolean)) {
-    if (merged.length === 0) {
-      merged.push(rawLine);
-      continue;
+function dedupeBullets(candidates: CandidateBullet[]): CandidateBullet[] {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const key = candidate.sourceText.toLowerCase();
+    if (seen.has(key)) {
+      return false;
     }
+    seen.add(key);
+    return true;
+  });
+}
 
-    const previous = merged[merged.length - 1];
-    const append =
-      !/[.?!]$/.test(previous) &&
-      (/^[a-z]/.test(rawLine) ||
-        previous.endsWith(",") ||
-        previous.endsWith("-") ||
-        /\b(and|or)$/.test(previous) ||
-        rawLine.split(/\s+/).length <= 4);
+function isWeakBullet(text: string): boolean {
+  return !ACTION_VERB_PATTERN.test(text) && text.split(/\s+/).length < 14;
+}
 
-    if (append) {
-      merged[merged.length - 1] = `${previous} ${rawLine}`;
-    } else {
-      merged.push(rawLine);
-    }
+function shouldExcludeBullet(text: string, profile: RoleProfile): boolean {
+  const lower = text.toLowerCase();
+  if (lower.startsWith("served in the duvdevan") || lower.startsWith("served in the")) {
+    const role = profile.normalizedRole.toLowerCase();
+    return !/(security|devops|platform|sre|operations)/.test(role);
   }
 
-  return merged;
+  return false;
 }
 
-function scoreLine(line: string, keywords: string[]): number {
-  const lower = line.toLowerCase();
-  return keywords.reduce((score, keyword) => score + (lower.includes(keyword) ? 3 : 0), 0);
-}
+function sourceGroundedBullet(sourceText: string, heading: string): string {
+  const text = sanitizeText(sourceText).replace(/\.$/, "");
 
-function toFormulaBullet(line: string): string {
-  const cleaned = line.replace(/\s+/g, " ").trim();
-  if (/ by /i.test(cleaned) && /(improved|built|designed|developed|enabled|reduced|delivered|supported|turned|coordinated|moved|personalized)/i.test(cleaned)) {
-    return cleaned.endsWith(".") ? cleaned : `${cleaned}.`;
+  if (/ by /i.test(text)) {
+    return `${text}.`;
   }
 
-  if (/(built|developed|designed|implemented|created)/i.test(cleaned)) {
-    return `${cleaned} by combining product logic, technical implementation, and maintainable system design.`;
+  if (
+    /(using|with|through|via)\b/i.test(text) &&
+    /(across|for|without|used by|to manage|to generate|to transfer|to track|to perform)\b/i.test(text)
+  ) {
+    return `${text}.`;
   }
 
-  if (/(supported|monitored|maintained)/i.test(cleaned)) {
-    return `${cleaned} by identifying issues early and keeping critical workflows stable.`;
+  if (/^currently working as/i.test(text)) {
+    const roleHeading = heading !== "General" ? `${heading}: ` : "";
+    return `${roleHeading}${text}.`;
   }
 
-  return `${cleaned} by applying practical engineering execution to a real user or business workflow.`;
+  if (/^monitored and identified/i.test(text)) {
+    return `${text}.`;
+  }
+
+  if (/^served in/i.test(text)) {
+    return `${text}.`;
+  }
+
+  if (/^(built|developed|designed|implemented|integrated|created|enabled|coordinated|supported|tested|validated|automated)/i.test(text)) {
+    return `${text}.`;
+  }
+
+  return `${text}.`;
 }
 
-function compactSummary(parsed: ParsedCv, role: string, keywords: string[]): string {
-  const topKeywords = [...new Set(keywords)]
-    .map((keyword) => keyword.replace(/\b\w/g, (char) => char.toUpperCase()))
-    .slice(0, 5)
-    .join(", ");
-  const skillsSnippet = collectSkills(parsed, keywords).slice(0, 6).join(", ");
-
-  return `${role} candidate with hands-on experience across ${topKeywords || "software engineering"} and a background that combines product development, production support, and fast technical execution. Strongest tools include ${skillsSnippet || "modern web and backend technologies"}.`;
-}
-
-function collectSkills(parsed: ParsedCv, keywords: string[]): string[] {
-  const skillsText = splitLines(parsed, "skills")
-    .map(cleanLine)
-    .filter((line) => !/^(frameworks|databases|tools|languages)$/i.test(line))
-    .join(",");
-
-  const parts = skillsText
-    .split(/[:,]|,|\|/)
-    .map((item) => item.trim())
-    .filter((item) => item.length > 1 && item.length < 40 && /[A-Za-z+#]/.test(item));
-
-  const ranked = parts.sort((a, b) => scoreLine(b, keywords) - scoreLine(a, keywords));
-  return [...new Set(ranked)].slice(0, 12);
-}
-
-function groupBullets(lines: string[], keywords: string[], limit: number): string[] {
-  return mergeFragments(lines)
-    .filter((line) => line.length > 30 && !isStandaloneLabel(line))
-    .map((line) => ({ line, score: scoreLine(line, keywords) }))
+function chooseBullets(
+  entries: ParsedEntry[],
+  section: "experience" | "projects",
+  profile: RoleProfile,
+  limit: number,
+  minScore = 5,
+): string[] {
+  return dedupeBullets(extractCandidateBullets(entries, section, profile))
     .sort((a, b) => b.score - a.score)
+    .filter(
+      (candidate) =>
+        candidate.score >= minScore &&
+        !isWeakBullet(candidate.sourceText) &&
+        !shouldExcludeBullet(candidate.sourceText, profile),
+    )
     .slice(0, limit)
-    .map(({ line }) => toFormulaBullet(line));
+    .map((candidate) => sourceGroundedBullet(candidate.sourceText, candidate.heading));
+}
+
+function chooseEducation(parsed: ParsedCv): string[] {
+  return parsed.educationLines
+    .map(sanitizeText)
+    .filter((line) => !/^languages$/i.test(line))
+    .slice(0, 4);
 }
 
 function buildDeterministicContent(parsed: ParsedCv, role: string): GeneratedCvContent {
-  const keywords = inferRoleKeywords(role);
-  const experienceLines = splitLines(parsed, "experience");
-  const projectLines = splitLines(parsed, "projects");
-  const educationLines = splitLines(parsed, "education");
+  const profile = buildRoleProfile(role);
+  const skills = selectSkills(parsed, profile);
+  const lowerRole = profile.normalizedRole.toLowerCase();
+  const experienceBullets = chooseBullets(
+    parsed.experienceEntries,
+    "experience",
+    profile,
+    lowerRole.includes("qa") ? 2 : 3,
+    5,
+  );
+  let projectBullets = chooseBullets(
+    parsed.projectEntries,
+    "projects",
+    profile,
+    lowerRole.includes("qa") ? 2 : 4,
+    lowerRole.includes("qa") ? 7 : 5,
+  );
+
+  if (
+    lowerRole.includes("qa") &&
+    !projectBullets.some((bullet) => /(test|quality|validate|monitor|error|defect|reliability)/i.test(bullet))
+  ) {
+    projectBullets = [];
+  }
+
+  const experience: GeneratedCvGroup[] = experienceBullets.length
+    ? [{ heading: "Relevant Experience", bullets: experienceBullets }]
+    : [];
+  const projects: GeneratedCvGroup[] = projectBullets.length
+    ? [{ heading: "Selected Projects", bullets: projectBullets }]
+    : [];
 
   return {
     name: parsed.name,
-    roleTitle: role,
+    roleTitle: profile.normalizedRole,
     contactLine: parsed.contactLine,
-    summary: compactSummary(parsed, role, keywords),
-    skills: collectSkills(parsed, keywords),
-    experience: [
+    summary: buildSummary(parsed, profile, skills),
+    skills,
+    experience,
+    projects,
+    education: chooseEducation(parsed),
+    additional: [],
+  };
+}
+
+async function aiRewriteCv(parsed: ParsedCv, role: string, fallback: GeneratedCvContent): Promise<GeneratedCvContent> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return fallback;
+  }
+
+  const profile = buildRoleProfile(role);
+  const client = new OpenAI({ apiKey });
+  const response = await client.responses.create({
+    model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
+    input: [
       {
-        heading: "Relevant Experience",
-        bullets: groupBullets(experienceLines, keywords, 3),
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text:
+              "You rewrite CVs for software and technical roles. Keep all claims strictly grounded in the source CV. Never invent numbers, tools, tests, certifications, or responsibilities. Tailor to the requested role by selecting and rewriting the most relevant source-backed experience. Avoid generic AI phrasing. Each bullet should read like a recruiter-ready resume bullet, ideally in the shape 'did X, affecting Y, by doing Z' when the source supports it. If the source does not support a measurable Y, use a bounded scope from the source instead of making one up. Omit weak or irrelevant bullets. Return JSON only.",
+          },
+        ],
       },
-    ].filter((group) => group.bullets.length > 0),
-    projects: [
       {
-        heading: "Selected Projects",
-        bullets: groupBullets(projectLines, keywords, 4),
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: JSON.stringify({
+              desiredRole: profile.normalizedRole,
+              roleProfile: profile,
+              sourceCv: {
+                name: parsed.name,
+                contactLine: parsed.contactLine,
+                summaryLines: parsed.summaryLines,
+                skills: parsed.skillItems,
+                experienceEntries: parsed.experienceEntries,
+                projectEntries: parsed.projectEntries,
+                educationLines: parsed.educationLines,
+                additionalLines: parsed.additionalLines,
+              },
+              fallback,
+              rules: [
+                "Use title-cased role name.",
+                "Summary must be 2 sentences max.",
+                "Skills must be a concise prioritized list.",
+                "Experience bullets must prioritize recruiter relevance for the desired role.",
+                "Project bullets must stay specific and source-grounded.",
+                "Do not include a Notes section.",
+                "Do not include military service unless it is one of the strongest remaining relevant signals.",
+              ],
+            }),
+          },
+        ],
       },
-    ].filter((group) => group.bullets.length > 0),
-    education: educationLines.slice(0, 3),
-    additional: [
-      "Generated from the candidate's source CV and tailored for the requested role without inventing unsupported achievements.",
     ],
+    text: {
+      format: {
+        type: "json_schema",
+        name: "tailored_cv",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            roleTitle: { type: "string" },
+            summary: { type: "string" },
+            skills: { type: "array", items: { type: "string" } },
+            experience: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  heading: { type: "string" },
+                  bullets: { type: "array", items: { type: "string" } },
+                },
+                required: ["heading", "bullets"],
+              },
+            },
+            projects: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  heading: { type: "string" },
+                  bullets: { type: "array", items: { type: "string" } },
+                },
+                required: ["heading", "bullets"],
+              },
+            },
+            education: { type: "array", items: { type: "string" } },
+          },
+          required: ["roleTitle", "summary", "skills", "experience", "projects", "education"],
+        },
+      },
+    },
+  });
+
+  const json = JSON.parse(response.output_text) as {
+    roleTitle: string;
+    summary: string;
+    skills: string[];
+    experience: GeneratedCvGroup[];
+    projects: GeneratedCvGroup[];
+    education: string[];
+  };
+
+  return {
+    name: parsed.name,
+    roleTitle: titleCaseRole(json.roleTitle || profile.normalizedRole),
+    contactLine: parsed.contactLine,
+    summary: sanitizeText(json.summary),
+    skills: [...new Set(json.skills.map(sanitizeText))].slice(0, 12),
+    experience: json.experience
+      .map((group) => ({
+        heading: sanitizeText(group.heading),
+        bullets: group.bullets.map((bullet) => sanitizeText(bullet)).filter(Boolean).slice(0, 4),
+      }))
+      .filter((group) => group.bullets.length > 0)
+      .slice(0, 2),
+    projects: json.projects
+      .map((group) => ({
+        heading: sanitizeText(group.heading),
+        bullets: group.bullets.map((bullet) => sanitizeText(bullet)).filter(Boolean).slice(0, 4),
+      }))
+      .filter((group) => group.bullets.length > 0)
+      .slice(0, 2),
+    education: json.education.map(sanitizeText).filter(Boolean).slice(0, 4),
+    additional: [],
   };
 }
 
 export async function rewriteCv(parsed: ParsedCv, role: string): Promise<GeneratedCvContent> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return buildDeterministicContent(parsed, role);
+  const fallback = buildDeterministicContent(parsed, role);
+
+  if (!process.env.OPENAI_API_KEY) {
+    return fallback;
   }
 
   try {
-    const client = new OpenAI({ apiKey });
-    const fallback = buildDeterministicContent(parsed, role);
-    const response = await client.responses.create({
-      model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
-      input: [
-        {
-          role: "system",
-          content: [
-            {
-              type: "input_text",
-              text:
-                "You rewrite CVs for a desired software role. Keep claims grounded in the source CV. Favor strong achievement bullets in the form 'did X, impacting Y, by doing Z'. Output valid JSON only with fields: summary, skills, experienceBullets, projectBullets, educationLines.",
-            },
-          ],
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: JSON.stringify({
-                desiredRole: role,
-                parsedCv: parsed,
-                fallback,
-              }),
-            },
-          ],
-        },
-      ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "cv_rewrite",
-          schema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              summary: { type: "string" },
-              skills: {
-                type: "array",
-                items: { type: "string" },
-              },
-              experienceBullets: {
-                type: "array",
-                items: { type: "string" },
-              },
-              projectBullets: {
-                type: "array",
-                items: { type: "string" },
-              },
-              educationLines: {
-                type: "array",
-                items: { type: "string" },
-              },
-            },
-            required: [
-              "summary",
-              "skills",
-              "experienceBullets",
-              "projectBullets",
-              "educationLines",
-            ],
-          },
-        },
-      },
-    });
-
-    const json = JSON.parse(response.output_text);
-    return {
-      name: parsed.name,
-      roleTitle: role,
-      contactLine: parsed.contactLine,
-      summary: json.summary,
-      skills: json.skills.slice(0, 12),
-      experience: [
-        {
-          heading: "Relevant Experience",
-          bullets: json.experienceBullets.slice(0, 3),
-        },
-      ].filter((group) => group.bullets.length > 0),
-      projects: [
-        {
-          heading: "Selected Projects",
-          bullets: json.projectBullets.slice(0, 4),
-        },
-      ].filter((group) => group.bullets.length > 0),
-      education: json.educationLines.slice(0, 3),
-      additional: [
-        "AI-assisted role tailoring using only source-backed information from the uploaded CV.",
-      ],
-    };
+    return await aiRewriteCv(parsed, role, fallback);
   } catch {
-    return buildDeterministicContent(parsed, role);
+    return fallback;
   }
 }
